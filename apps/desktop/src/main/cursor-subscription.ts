@@ -1,1 +1,15 @@
-export { extractCursorUserId, buildCursorSessionCookie, fetchCursorSubscription, readCursorSubscription } from '@juejin-opensource/jusage-core/subscription/readers/cursor-subscription';
+export {
+  extractCursorUserId,
+  buildCursorSessionCookie,
+  fetchCursorSubscription,
+  readCursorSubscription,
+  configureCursorSubscriptionReader,
+} from '@juejin-opensource/jusage-core/subscription/readers/cursor-subscription';
+export {
+  unwrapCursorAccessToken,
+  sealCursorAccessTokenForTests,
+  resetCursorSafeStorageCache,
+  isCursorKeychainDenied,
+  isSealedCursorAccessToken,
+  isPlainCursorAccessToken,
+} from '@juejin-opensource/jusage-core/subscription/readers/cursor-safe-storage';
