@@ -12,7 +12,6 @@ import {
 } from '../shared/cursor-subscription.js';
 import {
   CursorSafeStorageError,
-  isCursorKeychainDenied,
   unwrapCursorAccessToken,
   type CursorSafeStorageOptions,
 } from './cursor-safe-storage.js';
@@ -147,14 +146,13 @@ async function readCursorCredentials(
 
   let token: string;
   try {
-    // Auto-try Keychain on subscription reads so "始终允许" users load without a
-    // click each launch. After a denial, only manual refresh re-prompts.
-    const allowKeychainPrompt = options.forceRefresh === true || !isCursorKeychainDenied();
+    // Never raise the Keychain dialog on open/focus. Only the card refresh button
+    // may call `security`; an in-process cache from a prior refresh still works.
     token = await unwrapCursorAccessToken(rawToken, {
       platform: options.platform,
       decryptString: options.decryptString,
       readKeychainPassword: options.readKeychainPassword,
-      allowKeychainPrompt,
+      allowKeychainPrompt: options.forceRefresh === true,
       forceKeychainRefresh: options.forceRefresh === true,
     });
   } catch (error) {

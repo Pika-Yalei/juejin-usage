@@ -133,10 +133,12 @@ test('sealed login without Keychain grant keeps the card visible for a manual re
   stateDb.close();
   const previous = process.env.CURSOR_STATE_DB_PATH;
   process.env.CURSOR_STATE_DB_PATH = db;
-  // Force the macOS Keychain path on every CI OS so denial stays deterministic.
+  // Force the macOS Keychain path on every CI OS; auto load must not call security.
+  let keychainReads = 0;
   configureCursorSubscriptionReader({
     platform: 'darwin',
     readKeychainPassword: async () => {
+      keychainReads += 1;
       throw new Error('user denied');
     },
   });
@@ -144,8 +146,15 @@ test('sealed login without Keychain grant keeps the card visible for a manual re
     const snapshot = await readCursorSubscription({ forceRefresh: false });
     assert.equal(snapshot.status, 'temporarily-unavailable');
     assert.equal(snapshot.hasAccount, true);
-    assert.equal(isCursorKeychainDenied(), true);
+    assert.equal(keychainReads, 0);
+    assert.equal(isCursorKeychainDenied(), false);
     assert.match(snapshot.message ?? '', /刷新|始终允许/);
+
+    const denied = await readCursorSubscription({ forceRefresh: true });
+    assert.equal(denied.hasAccount, true);
+    assert.equal(keychainReads, 1);
+    assert.equal(isCursorKeychainDenied(), true);
+    assert.match(denied.message ?? '', /刷新|始终允许/);
   } finally {
     configureCursorSubscriptionReader({});
     if (previous === undefined) delete process.env.CURSOR_STATE_DB_PATH;

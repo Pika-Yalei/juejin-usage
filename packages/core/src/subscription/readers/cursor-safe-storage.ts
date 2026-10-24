@@ -181,8 +181,8 @@ export async function unwrapCursorAccessToken(
       keychainDeniedThisSession = false;
     }
     if (!cachedKeychainPassword) {
-      // Background CSV sync must not pop the Keychain dialog. Subscription reads
-      // pass allowKeychainPrompt unless a denial was already recorded this session.
+      // Open/focus and CSV sync must not pop the Keychain dialog; only an explicit
+      // subscription refresh passes allowKeychainPrompt.
       if (!options.allowKeychainPrompt) {
         throw new CursorSafeStorageError(
           keychainDeniedThisSession ? 'keychain-denied' : 'keychain-required',
