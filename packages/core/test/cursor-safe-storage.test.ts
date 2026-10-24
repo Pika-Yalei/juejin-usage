@@ -145,13 +145,23 @@ test('forceKeychainRefresh re-reads the keychain after a failed decrypt cache', 
   assert.equal(keychainReads, 2);
 });
 
-test('Windows sealed tokens require an injected decryptor', async () => {
+test('Windows and Linux sealed-token messages stay platform-specific', async () => {
   resetCursorSafeStorageCache();
   const jwt = jwtFor('auth0|user_win');
   const sealed = sealCursorAccessTokenForTests(jwt, PASSWORD);
   await assert.rejects(
     () => unwrapCursorAccessToken(sealed, { platform: 'win32' }),
-    (error: unknown) => error instanceof CursorSafeStorageError && error.kind === 'unsupported-platform',
+    (error: unknown) => error instanceof CursorSafeStorageError
+      && error.kind === 'unsupported-platform'
+      && error.message.includes('Windows')
+      && !error.message.includes('钥匙串'),
+  );
+  await assert.rejects(
+    () => unwrapCursorAccessToken(sealed, { platform: 'linux' }),
+    (error: unknown) => error instanceof CursorSafeStorageError
+      && error.kind === 'unsupported-platform'
+      && error.message.includes('当前系统暂不支持')
+      && !error.message.includes('钥匙串'),
   );
   assert.equal(
     await unwrapCursorAccessToken(sealed, {

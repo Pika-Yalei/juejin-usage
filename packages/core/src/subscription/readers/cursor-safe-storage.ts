@@ -30,6 +30,8 @@ export class CursorSafeStorageError extends Error {
 
 const KEYCHAIN_PROMPT = '点击刷新并允许钥匙串访问（建议选「始终允许」）';
 const KEYCHAIN_DENIED = '无法读取 Cursor 登录信息，请点刷新并在钥匙串弹窗选择「始终允许」';
+const WINDOWS_NEEDS_DECRYPTOR = '无法解密 Cursor 加密登录信息（Windows 桌面端后续版本将支持）';
+const LINUX_UNSUPPORTED = '当前系统暂不支持读取 Cursor 的加密登录信息';
 
 export interface CursorSafeStorageOptions {
   platform?: NodeJS.Platform;
@@ -215,10 +217,7 @@ export async function unwrapCursorAccessToken(
   if (platform === 'win32') {
     const decryptString = options.decryptString;
     if (!decryptString) {
-      throw new CursorSafeStorageError(
-        'unsupported-platform',
-        '当前环境无法解密 Cursor 的加密登录信息',
-      );
+      throw new CursorSafeStorageError('unsupported-platform', WINDOWS_NEEDS_DECRYPTOR);
     }
     try {
       const plain = decryptString(ciphertext).trim();
@@ -229,8 +228,5 @@ export async function unwrapCursorAccessToken(
     }
   }
 
-  throw new CursorSafeStorageError(
-    'unsupported-platform',
-    '当前系统暂不支持读取 Cursor 的加密登录信息',
-  );
+  throw new CursorSafeStorageError('unsupported-platform', LINUX_UNSUPPORTED);
 }
