@@ -109,7 +109,7 @@ test('weekly Premium plans replace misleading zero Auto/API pools', async () => 
   assert.deepEqual(snapshot.plan, { usedPercent: 35.5, startsAt: 1_790_812_800, resetsAt: 1_791_417_600 });
 });
 
-test('sealed login without Keychain grant keeps the card visible for a manual refresh', async () => {
+test('first open without prior unlock does not force a Keychain dialog', async () => {
   const { mkdtemp, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -119,11 +119,13 @@ test('sealed login without Keychain grant keeps the card visible for a manual re
     configureCursorSubscriptionReader,
     sealCursorAccessTokenForTests,
     resetCursorSafeStorageCache,
+    clearCursorKeychainUnlockGrant,
     isCursorKeychainDenied,
   } = await import('./cursor-subscription.js');
 
   resetCursorSafeStorageCache();
   const directory = await mkdtemp(join(tmpdir(), 'jusage-cursor-has-account-'));
+  const grantPath = join(directory, 'cursor-keychain-ok');
   const db = join(directory, 'state.vscdb');
   const jwt = `header.${Buffer.from(JSON.stringify({ sub: 'auth0|user_visible' })).toString('base64url')}.sig`;
   const sealed = sealCursorAccessTokenForTests(jwt, 'fixture-password');
@@ -131,9 +133,12 @@ test('sealed login without Keychain grant keeps the card visible for a manual re
   stateDb.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)');
   stateDb.prepare('INSERT INTO ItemTable VALUES (?, ?)').run('cursorAuth/accessToken', sealed);
   stateDb.close();
-  const previous = process.env.CURSOR_STATE_DB_PATH;
+  const previousDb = process.env.CURSOR_STATE_DB_PATH;
+  const previousGrant = process.env.CURSOR_KEYCHAIN_GRANT_PATH;
   process.env.CURSOR_STATE_DB_PATH = db;
-  // Force the macOS Keychain path on every CI OS; auto load must not call security.
+  process.env.CURSOR_KEYCHAIN_GRANT_PATH = grantPath;
+  await clearCursorKeychainUnlockGrant();
+  resetCursorSafeStorageCache();
   let keychainReads = 0;
   configureCursorSubscriptionReader({
     platform: 'darwin',
@@ -155,10 +160,90 @@ test('sealed login without Keychain grant keeps the card visible for a manual re
     assert.equal(keychainReads, 1);
     assert.equal(isCursorKeychainDenied(), true);
     assert.match(denied.message ?? '', /刷新|始终允许/);
+
+    // After denial, auto open must still not re-prompt.
+    const again = await readCursorSubscription({ forceRefresh: false });
+    assert.equal(again.hasAccount, true);
+    assert.equal(keychainReads, 1);
   } finally {
     configureCursorSubscriptionReader({});
-    if (previous === undefined) delete process.env.CURSOR_STATE_DB_PATH;
-    else process.env.CURSOR_STATE_DB_PATH = previous;
+    if (previousDb === undefined) delete process.env.CURSOR_STATE_DB_PATH;
+    else process.env.CURSOR_STATE_DB_PATH = previousDb;
+    if (previousGrant === undefined) delete process.env.CURSOR_KEYCHAIN_GRANT_PATH;
+    else process.env.CURSOR_KEYCHAIN_GRANT_PATH = previousGrant;
+    resetCursorSafeStorageCache();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('open with a prior unlock grant shows the card without a manual refresh', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { DatabaseSync } = await import('node:sqlite');
+  const {
+    readCursorSubscription,
+    configureCursorSubscriptionReader,
+    sealCursorAccessTokenForTests,
+    resetCursorSafeStorageCache,
+    markCursorKeychainUnlockGrant,
+    clearCursorKeychainUnlockGrant,
+  } = await import('./cursor-subscription.js');
+
+  resetCursorSafeStorageCache();
+  const directory = await mkdtemp(join(tmpdir(), 'jusage-cursor-always-allow-'));
+  const grantPath = join(directory, 'cursor-keychain-ok');
+  const db = join(directory, 'state.vscdb');
+  const password = 'fixture-always-allow';
+  const jwt = `header.${Buffer.from(JSON.stringify({ sub: 'auth0|user_open' })).toString('base64url')}.sig`;
+  const sealed = sealCursorAccessTokenForTests(jwt, password);
+  const stateDb = new DatabaseSync(db);
+  stateDb.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)');
+  stateDb.prepare('INSERT INTO ItemTable VALUES (?, ?)').run('cursorAuth/accessToken', sealed);
+  stateDb.close();
+  const previousDb = process.env.CURSOR_STATE_DB_PATH;
+  const previousGrant = process.env.CURSOR_KEYCHAIN_GRANT_PATH;
+  process.env.CURSOR_STATE_DB_PATH = db;
+  process.env.CURSOR_KEYCHAIN_GRANT_PATH = grantPath;
+  await clearCursorKeychainUnlockGrant();
+  await markCursorKeychainUnlockGrant();
+  resetCursorSafeStorageCache();
+  let keychainReads = 0;
+  configureCursorSubscriptionReader({
+    platform: 'darwin',
+    readKeychainPassword: async () => {
+      keychainReads += 1;
+      return password;
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith('usage-summary')) {
+      return Response.json({
+        membershipType: 'pro',
+        individualUsage: { plan: { autoPercentUsed: 10, apiPercentUsed: 0 } },
+      });
+    }
+    if (url.endsWith('get-plan-info')) {
+      return Response.json({ planInfo: { includedUsagePeriod: 'INCLUDED_USAGE_PERIOD_MONTHLY' } });
+    }
+    return new Response('', { status: 404 });
+  }) as typeof fetch;
+  try {
+    const snapshot = await readCursorSubscription({ forceRefresh: false });
+    assert.equal(keychainReads, 1);
+    assert.equal(snapshot.status, 'ready');
+    assert.equal(snapshot.hasAccount, true);
+    assert.equal(snapshot.message, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    configureCursorSubscriptionReader({});
+    if (previousDb === undefined) delete process.env.CURSOR_STATE_DB_PATH;
+    else process.env.CURSOR_STATE_DB_PATH = previousDb;
+    if (previousGrant === undefined) delete process.env.CURSOR_KEYCHAIN_GRANT_PATH;
+    else process.env.CURSOR_KEYCHAIN_GRANT_PATH = previousGrant;
+    await clearCursorKeychainUnlockGrant();
     resetCursorSafeStorageCache();
     await rm(directory, { recursive: true, force: true });
   }

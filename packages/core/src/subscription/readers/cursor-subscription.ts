@@ -12,6 +12,8 @@ import {
 } from '../shared/cursor-subscription.js';
 import {
   CursorSafeStorageError,
+  hasCursorKeychainUnlockGrant,
+  isCursorKeychainDenied,
   unwrapCursorAccessToken,
   type CursorSafeStorageOptions,
 } from './cursor-safe-storage.js';
@@ -31,7 +33,15 @@ interface CursorCredentials {
 
 export type CursorSubscriptionReadOptions = {
   forceRefresh?: boolean;
-} & Pick<CursorSafeStorageOptions, 'decryptString' | 'readKeychainPassword' | 'platform'>;
+} & Pick<
+  CursorSafeStorageOptions,
+  | 'decryptString'
+  | 'readKeychainPassword'
+  | 'readWindowsOsCryptKey'
+  | 'readLinuxPassword'
+  | 'localStatePath'
+  | 'platform'
+>;
 
 class CursorCredentialError extends Error {
   constructor(
@@ -146,13 +156,21 @@ async function readCursorCredentials(
 
   let token: string;
   try {
-    // Never raise the Keychain dialog on open/focus. Only the card refresh button
-    // may call `security`; an in-process cache from a prior refresh still works.
+    // Open/focus Keychain policy:
+    // - Never authorized: do not call security (no forced dialog); card shows refresh hint.
+    // - Prior successful unlock (`cursor-keychain-ok`, usually after「始终允许」): try silently.
+    // - Denied this process: skip until manual refresh.
+    // CSV sync always uses allowKeychainPrompt:false on its own path.
+    const allowKeychainPrompt = options.forceRefresh === true
+      || (!isCursorKeychainDenied() && hasCursorKeychainUnlockGrant());
     token = await unwrapCursorAccessToken(rawToken, {
       platform: options.platform,
       decryptString: options.decryptString,
       readKeychainPassword: options.readKeychainPassword,
-      allowKeychainPrompt: options.forceRefresh === true,
+      readWindowsOsCryptKey: options.readWindowsOsCryptKey,
+      readLinuxPassword: options.readLinuxPassword,
+      localStatePath: options.localStatePath,
+      allowKeychainPrompt,
       forceKeychainRefresh: options.forceRefresh === true,
     });
   } catch (error) {
@@ -307,7 +325,7 @@ export async function readCursorSubscription(
     ? Date.now() - lastSuccess.fetchedAt * 1_000
     : Number.POSITIVE_INFINITY;
   if (!merged.forceRefresh && lastSuccess && cacheAge <= CACHE_TTL_MS) return lastSuccess;
-  // Manual refresh must not join an in-flight auto load that skipped Keychain.
+  // Manual refresh must not join an in-flight auto load (may still be waiting on Keychain).
   if (requestInFlight && !merged.forceRefresh) return requestInFlight;
   if (requestInFlight && merged.forceRefresh) await requestInFlight.catch(() => {});
   requestInFlight = fetchFreshCursorSubscription(merged);

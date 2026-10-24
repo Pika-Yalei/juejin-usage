@@ -57,7 +57,7 @@ export function CursorSubscriptionCard() {
   useEffect(() => {
     void reload();
     const onFocus = () => {
-      // Don't kick Keychain again on every focus while waiting for a manual grant.
+      // After a Keychain denial, keep the refresh hint; don't re-prompt on focus.
       const current = snapshotRef.current;
       if (current.hasAccount && current.message && current.status !== 'ready') return;
       void reload();

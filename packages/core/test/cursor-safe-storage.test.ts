@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   CursorSafeStorageError,
+  clearCursorKeychainUnlockGrant,
   isPlainCursorAccessToken,
   isSealedCursorAccessToken,
   resetCursorSafeStorageCache,
   sealCursorAccessTokenForTests,
+  sealCursorAccessTokenLinuxForTests,
+  sealCursorAccessTokenWindowsForTests,
   unwrapCursorAccessToken,
 } from '../src/subscription/readers/cursor-safe-storage.js';
 
@@ -14,6 +21,28 @@ const PASSWORD = 'fixture-cursor-keychain-password';
 function jwtFor(sub: string): string {
   return `header.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.sig`;
 }
+
+let grantDir: string | undefined;
+const previousGrantPath = process.env.CURSOR_KEYCHAIN_GRANT_PATH;
+
+test.before(async () => {
+  grantDir = await mkdtemp(join(tmpdir(), 'jusage-cursor-grant-'));
+  process.env.CURSOR_KEYCHAIN_GRANT_PATH = join(grantDir, 'cursor-keychain-ok');
+  await clearCursorKeychainUnlockGrant();
+  resetCursorSafeStorageCache();
+});
+
+test.after(async () => {
+  if (previousGrantPath === undefined) delete process.env.CURSOR_KEYCHAIN_GRANT_PATH;
+  else process.env.CURSOR_KEYCHAIN_GRANT_PATH = previousGrantPath;
+  resetCursorSafeStorageCache();
+  if (grantDir) await rm(grantDir, { recursive: true, force: true });
+});
+
+test.beforeEach(async () => {
+  await clearCursorKeychainUnlockGrant();
+  resetCursorSafeStorageCache();
+});
 
 test('plaintext JWTs pass through unchanged for older Cursor builds', async () => {
   resetCursorSafeStorageCache();
@@ -145,24 +174,97 @@ test('forceKeychainRefresh re-reads the keychain after a failed decrypt cache', 
   assert.equal(keychainReads, 2);
 });
 
-test('Windows and Linux sealed-token messages stay platform-specific', async () => {
+test('Windows sealed tokens decrypt via OSCrypt AES-256-GCM without Keychain wording', async () => {
   resetCursorSafeStorageCache();
   const jwt = jwtFor('auth0|user_win');
+  const key = randomBytes(32);
+  const sealed = sealCursorAccessTokenWindowsForTests(jwt, key);
+  let keyReads = 0;
+
+  assert.equal(
+    await unwrapCursorAccessToken(sealed, {
+      platform: 'win32',
+      readWindowsOsCryptKey: async () => {
+        keyReads += 1;
+        return Buffer.from(key);
+      },
+    }),
+    jwt,
+  );
+  assert.equal(keyReads, 1);
+
+  // Cached key — no second Local State / DPAPI round-trip.
+  assert.equal(
+    await unwrapCursorAccessToken(sealed, {
+      platform: 'win32',
+      readWindowsOsCryptKey: async () => {
+        keyReads += 1;
+        return Buffer.from(key);
+      },
+    }),
+    jwt,
+  );
+  assert.equal(keyReads, 1);
+});
+
+test('Linux v10 peanuts decrypts without Secret Service prompt', async () => {
+  resetCursorSafeStorageCache();
+  const jwt = jwtFor('auth0|user_linux_basic');
+  const sealed = sealCursorAccessTokenLinuxForTests(jwt, 'peanuts', 'v10');
+  let keyringReads = 0;
+  assert.equal(
+    await unwrapCursorAccessToken(sealed, {
+      platform: 'linux',
+      readLinuxPassword: async () => {
+        keyringReads += 1;
+        return 'should-not-run';
+      },
+    }),
+    jwt,
+  );
+  assert.equal(keyringReads, 0);
+});
+
+test('Linux v11 requires an explicit refresh before reading the keyring', async () => {
+  resetCursorSafeStorageCache();
+  const jwt = jwtFor('auth0|user_linux_v11');
+  const password = 'linux-keyring-password';
+  const sealed = sealCursorAccessTokenLinuxForTests(jwt, password, 'v11');
+  let keyringReads = 0;
+
+  await assert.rejects(
+    () => unwrapCursorAccessToken(sealed, {
+      platform: 'linux',
+      readLinuxPassword: async () => {
+        keyringReads += 1;
+        return password;
+      },
+    }),
+    (error: unknown) => error instanceof CursorSafeStorageError
+      && error.kind === 'keychain-required'
+      && /钥匙环/.test(error.message)
+      && !error.message.includes('钥匙串'),
+  );
+  assert.equal(keyringReads, 0);
+
+  assert.equal(
+    await unwrapCursorAccessToken(sealed, {
+      platform: 'linux',
+      allowKeychainPrompt: true,
+      readLinuxPassword: async () => {
+        keyringReads += 1;
+        return password;
+      },
+    }),
+    jwt,
+  );
+  assert.equal(keyringReads, 1);
+});
+
+test('decryptString override still works on any platform', async () => {
+  resetCursorSafeStorageCache();
+  const jwt = jwtFor('auth0|user_override');
   const sealed = sealCursorAccessTokenForTests(jwt, PASSWORD);
-  await assert.rejects(
-    () => unwrapCursorAccessToken(sealed, { platform: 'win32' }),
-    (error: unknown) => error instanceof CursorSafeStorageError
-      && error.kind === 'unsupported-platform'
-      && error.message.includes('Windows')
-      && !error.message.includes('钥匙串'),
-  );
-  await assert.rejects(
-    () => unwrapCursorAccessToken(sealed, { platform: 'linux' }),
-    (error: unknown) => error instanceof CursorSafeStorageError
-      && error.kind === 'unsupported-platform'
-      && error.message.includes('当前系统暂不支持')
-      && !error.message.includes('钥匙串'),
-  );
   assert.equal(
     await unwrapCursorAccessToken(sealed, {
       platform: 'win32',

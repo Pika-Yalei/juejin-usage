@@ -10,6 +10,9 @@ export {
   sealCursorAccessTokenForTests,
   resetCursorSafeStorageCache,
   isCursorKeychainDenied,
+  hasCursorKeychainUnlockGrant,
+  markCursorKeychainUnlockGrant,
+  clearCursorKeychainUnlockGrant,
   isSealedCursorAccessToken,
   isPlainCursorAccessToken,
 } from '@juejin-opensource/jusage-core/subscription/readers/cursor-safe-storage';
