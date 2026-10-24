@@ -28,7 +28,7 @@ export class CursorSafeStorageError extends Error {
   }
 }
 
-const KEYCHAIN_PROMPT = '点击刷新并允许钥匙串访问（建议选「始终允许」；弹窗可能在窗口后面）';
+const KEYCHAIN_PROMPT = '点击刷新并允许钥匙串访问（建议选「始终允许」）';
 const KEYCHAIN_DENIED = '无法读取 Cursor 登录信息，请点刷新并在钥匙串弹窗选择「始终允许」';
 
 export interface CursorSafeStorageOptions {
@@ -144,30 +144,17 @@ export function sealCursorAccessTokenForTests(plaintext: string, keychainPasswor
   }
 }
 
-/** Electron often covers the Keychain dialog; pull SecurityAgent forward while we wait. */
-function revealKeychainPrompt(): void {
-  void execFileAsync(
-    '/usr/bin/osascript',
-    ['-e', 'tell application "System Events" to set frontmost of first process whose name is "SecurityAgent" to true'],
-    { timeout: 2_000, encoding: 'utf8' },
-  ).catch(() => {});
-}
-
 async function readMacKeychainPassword(): Promise<string> {
-  const revealTimer = setInterval(() => revealKeychainPrompt(), 500);
-  revealKeychainPrompt();
-  try {
-    const { stdout } = await execFileAsync(
-      '/usr/bin/security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
-      { encoding: 'utf8', timeout: 60_000, maxBuffer: 4096 },
-    );
-    const password = stdout.trim();
-    if (!password) throw new Error('Cursor keychain item is empty');
-    return password;
-  } finally {
-    clearInterval(revealTimer);
-  }
+  // Do not use osascript/System Events to raise SecurityAgent: that triggers a
+  // separate Automation permission dialog for "Juejin Usage" controlling System Events.
+  const { stdout } = await execFileAsync(
+    '/usr/bin/security',
+    ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
+    { encoding: 'utf8', timeout: 60_000, maxBuffer: 4096 },
+  );
+  const password = stdout.trim();
+  if (!password) throw new Error('Cursor keychain item is empty');
+  return password;
 }
 
 /**

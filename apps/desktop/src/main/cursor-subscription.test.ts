@@ -113,7 +113,7 @@ test('sealed login without Keychain grant keeps the card visible for a manual re
   const { mkdtemp, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const { execFileSync } = await import('node:child_process');
+  const { DatabaseSync } = await import('node:sqlite');
   const {
     readCursorSubscription,
     configureCursorSubscriptionReader,
@@ -127,11 +127,15 @@ test('sealed login without Keychain grant keeps the card visible for a manual re
   const db = join(directory, 'state.vscdb');
   const jwt = `header.${Buffer.from(JSON.stringify({ sub: 'auth0|user_visible' })).toString('base64url')}.sig`;
   const sealed = sealCursorAccessTokenForTests(jwt, 'fixture-password');
-  execFileSync('sqlite3', [db, `CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT);
-    INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', '${sealed}');`]);
+  const stateDb = new DatabaseSync(db);
+  stateDb.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)');
+  stateDb.prepare('INSERT INTO ItemTable VALUES (?, ?)').run('cursorAuth/accessToken', sealed);
+  stateDb.close();
   const previous = process.env.CURSOR_STATE_DB_PATH;
   process.env.CURSOR_STATE_DB_PATH = db;
+  // Force the macOS Keychain path on every CI OS so denial stays deterministic.
   configureCursorSubscriptionReader({
+    platform: 'darwin',
     readKeychainPassword: async () => {
       throw new Error('user denied');
     },
