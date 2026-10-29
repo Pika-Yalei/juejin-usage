@@ -130,6 +130,10 @@ export interface DashboardHourlyUsageRow {
   totalTokens: number;
   costUsd: number;
   durationMinutes: number;
+  /** From API `localMetrics.requestCount`; null when incomplete. */
+  requestCount?: number | null;
+  /** Sum of known request evidence even when the total is incomplete. */
+  knownRequestCount?: number;
 }
 
 export interface DashboardDailyUsageRow {
@@ -146,6 +150,10 @@ export interface DashboardDailyUsageRow {
   totalTokens: number;
   costUsd: number;
   durationMinutes: number;
+  /** From API `localMetrics.requestCount`; null when incomplete. */
+  requestCount?: number | null;
+  /** Sum of known request evidence even when the total is incomplete. */
+  knownRequestCount?: number;
 }
 
 export interface DashboardUsageSummary {
@@ -157,6 +165,33 @@ export interface DashboardUsageSummary {
   totalTokens: number;
   totalCostUsd: number;
   totalDurationMinutes: number;
+  /** Aggregated local request count; null when any part is incomplete. */
+  requestCount?: number | null;
+  /** Sum of known request evidence even when the total is incomplete. */
+  knownRequestCount?: number;
+}
+
+/**
+ * Sum request counts. `undefined` parts are skipped; any `null` poisons the total.
+ */
+export function mergeRequestCount(
+  a: number | null | undefined,
+  b: number | null | undefined,
+): number | null | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  if (a === null || b === null) return null;
+  return a + b;
+}
+
+/** Sum known request evidence; skips undefined. */
+export function mergeKnownRequestCount(
+  a: number | undefined,
+  b: number | undefined,
+): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return a + b;
 }
 
 export interface DashboardMetricChanges {
@@ -667,6 +702,11 @@ export function aggregateUsage(
       totalCostUsd: current.totalCostUsd + row.costUsd,
       totalDurationMinutes:
         current.totalDurationMinutes + row.durationMinutes,
+      requestCount: mergeRequestCount(current.requestCount, row.requestCount),
+      knownRequestCount: mergeKnownRequestCount(
+        current.knownRequestCount,
+        row.knownRequestCount,
+      ),
     }),
     {
       inputTokens: 0,

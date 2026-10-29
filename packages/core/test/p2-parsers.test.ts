@@ -31,7 +31,10 @@ test('parseClineIncremental reads api_req_started token columns', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tud-cline-'));
   const extDir = join(root, 'cline-ext');
   const prev = process.env.AI_USAGE_CLINE_ROOTS;
+  const prevSessionDir = process.env.CLINE_SESSION_DATA_DIR;
   process.env.AI_USAGE_CLINE_ROOTS = extDir;
+  // SDK sessions fall back to ~/.cline when this is unset.
+  process.env.CLINE_SESSION_DATA_DIR = join(root, 'no-sdk-sessions');
   try {
     await mkdir(join(extDir, 'state'), { recursive: true });
     await mkdir(join(extDir, 'tasks', 'task-1'), { recursive: true });
@@ -71,6 +74,8 @@ test('parseClineIncremental reads api_req_started token columns', async () => {
   } finally {
     if (prev === undefined) delete process.env.AI_USAGE_CLINE_ROOTS;
     else process.env.AI_USAGE_CLINE_ROOTS = prev;
+    if (prevSessionDir === undefined) delete process.env.CLINE_SESSION_DATA_DIR;
+    else process.env.CLINE_SESSION_DATA_DIR = prevSessionDir;
   }
 });
 
@@ -660,6 +665,115 @@ test('parseCodebuddyIncremental reads App / extension history messages', async (
   }
 });
 
+test('parseCodebuddyIncremental prefers statsSnapshot over lastStep usage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tud-cb-snapshot-'));
+  const messagesDir = join(
+    root,
+    'user-1',
+    'CodeBuddyIDE',
+    'user-1',
+    'history',
+    'ws-md5',
+    'sess-1',
+    'messages',
+  );
+  await mkdir(messagesDir, { recursive: true });
+
+  // A reply whose agent loop ran many steps: `lastStep*` is only the final
+  // call, `statsSnapshot` is the whole-loop total the UI shows.
+  await writeFile(
+    join(messagesDir, 'dddddddddddddddddddddddddddddddd.json'),
+    JSON.stringify({
+      id: 'dddddddddddddddddddddddddddddddd',
+      role: 'assistant',
+      createdAt: '2026-09-20T08:13:32.746Z',
+      message: '{"role":"assistant","content":[]}',
+      extra: JSON.stringify({
+        modelId: 'hy4-preview-f',
+        lastStepInputTokens: 1000,
+        lastStepOutputTokens: 40,
+        lastStepCachedInputTokens: 800,
+        statsSnapshot: {
+          inputTokens: 500_000,
+          outputTokens: 8_000,
+          cachedInputTokens: 460_000,
+          cacheMissTokens: 40_000,
+          cacheWriteTokens: 500,
+          thinkingTokens: 3_000,
+          credit: 0,
+        },
+      }),
+    }),
+  );
+
+  const files = resolveCodebuddyExtensionMessageFiles({
+    ...process.env,
+    CODEBUDDY_EXTENSION_ROOTS: root,
+  });
+  const { result } = await parseCodebuddyIncremental({}, SINCE, {
+    projectFiles: [],
+    extensionFiles: files,
+    sessionCwds: new Map([['sess-1', '/Users/lishanbing/workspace/juejin-usage']]),
+    defaultModel: 'codebuddy-unknown',
+  });
+  assert.equal(result.eventsParsed, 1);
+  const bucket = result.buckets.find((b) => b.source === 'codebuddy')!;
+  assert.equal(bucket.input_tokens, 40_000); // cacheMissTokens, not lastStep input
+  assert.equal(bucket.cached_input_tokens, 460_000);
+  assert.equal(bucket.cache_creation_input_tokens, 500);
+  assert.equal(bucket.output_tokens, 8_000);
+  assert.equal(bucket.reasoning_output_tokens, 3_000);
+  assert.equal(bucket.total_tokens, 511_500);
+});
+
+test('parseCodebuddyIncremental falls back to lastStep when snapshot is empty', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tud-cb-snapshot-zero-'));
+  const messagesDir = join(
+    root,
+    'user-1',
+    'CodeBuddyIDE',
+    'user-1',
+    'history',
+    'ws-md5',
+    'sess-1',
+    'messages',
+  );
+  await mkdir(messagesDir, { recursive: true });
+
+  await writeFile(
+    join(messagesDir, 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.json'),
+    JSON.stringify({
+      id: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      role: 'assistant',
+      createdAt: '2026-09-20T08:13:32.746Z',
+      extra: JSON.stringify({
+        modelId: 'hy4-preview-f',
+        lastStepInputTokens: 1000,
+        lastStepOutputTokens: 40,
+        lastStepCachedInputTokens: 800,
+        statsSnapshot: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+      }),
+    }),
+  );
+
+  const files = resolveCodebuddyExtensionMessageFiles({
+    ...process.env,
+    CODEBUDDY_EXTENSION_ROOTS: root,
+  });
+  const { result } = await parseCodebuddyIncremental({}, SINCE, {
+    projectFiles: [],
+    extensionFiles: files,
+    sessionCwds: new Map([['sess-1', '/Users/lishanbing/workspace/juejin-usage']]),
+    defaultModel: 'codebuddy-unknown',
+  });
+  assert.equal(result.eventsParsed, 1);
+  const bucket = result.buckets.find((b) => b.source === 'codebuddy')!;
+  assert.equal(bucket.input_tokens, 200); // 1000 - 800 cached
+  assert.equal(bucket.cached_input_tokens, 800);
+  assert.equal(bucket.output_tokens, 40);
+  assert.equal(bucket.total_tokens, 1040);
+});
+
 test('parseCodebuddyIncremental attributes plugin sessions via genie-history', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tud-cb-plugin-'));
   const cwd = '/Users/sugar/Documents/github/juejin-usage';
@@ -1100,6 +1214,52 @@ test('parseEveryCodeIncremental emits cumulative token_count deltas', async () =
   } finally {
     if (prev === undefined) delete process.env.AI_USAGE_EVERY_CODE_HOME;
     else process.env.AI_USAGE_EVERY_CODE_HOME = prev;
+  }
+});
+
+test('parseEveryCodeIncremental waits for a timestamp before advancing cumulative totals', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'tud-ec-'));
+  const previousHome = process.env.AI_USAGE_EVERY_CODE_HOME;
+  process.env.AI_USAGE_EVERY_CODE_HOME = home;
+  try {
+    const sessions = join(home, 'sessions');
+    await mkdir(sessions, { recursive: true });
+    const rolloutPath = join(sessions, '2026_deferred_timestamp.jsonl');
+    const sessionLine = JSON.stringify({
+      type: 'session_meta',
+      payload: { id: 'sess-ec-deferred-timestamp', cwd: '/tmp/every-code' },
+    });
+    const totals = { input_tokens: 100, output_tokens: 50 };
+    const incompleteTokenLine = JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: { model: 'gpt-5', total_token_usage: totals },
+      },
+    });
+    await writeFile(rolloutPath, `${sessionLine}\n${incompleteTokenLine}\n`);
+
+    const cursors: CursorsFile = {};
+    const first = await parseEveryCodeIncremental(cursors, SINCE);
+    assert.equal(first.result.eventsParsed, 0);
+
+    const completedTokenLine = JSON.stringify({
+      type: 'event_msg',
+      timestamp: '2026-07-24T14:00:00.000Z',
+      payload: {
+        type: 'token_count',
+        info: { model: 'gpt-5', total_token_usage: totals },
+      },
+    });
+    await appendFile(rolloutPath, `${completedTokenLine}\n`);
+
+    const second = await parseEveryCodeIncremental(cursors, SINCE);
+    assert.equal(second.result.eventsParsed, 1);
+    assert.equal(second.result.buckets[0]!.input_tokens, 100);
+    assert.equal(second.result.buckets[0]!.output_tokens, 50);
+  } finally {
+    if (previousHome === undefined) delete process.env.AI_USAGE_EVERY_CODE_HOME;
+    else process.env.AI_USAGE_EVERY_CODE_HOME = previousHome;
   }
 });
 

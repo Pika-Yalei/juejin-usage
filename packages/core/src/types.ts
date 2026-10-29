@@ -8,6 +8,7 @@ export type {
 } from './local-metrics.js';
 
 export interface QueueBucket {
+  /** Local-only request/cache evidence. Never uploaded. */
   local_metrics?: LocalMetricEvidence;
   hour_start: string;
   source: string;
@@ -124,6 +125,11 @@ export interface CodexSessionIndexEntry {
 }
 
 export interface CursorsFile {
+  minimaxCode?: {
+    databases: Record<string, number>;
+    files: Record<string, { offset: number; inode?: number }>;
+    seenMessageIds?: string[];
+  };
   claude?: {
     files: Record<string, ClaudeFileCursor>;
     /** Legacy first-wins keys; still honored so already-ingested rows are not double-counted. */
@@ -135,6 +141,13 @@ export interface CursorsFile {
     files: Record<string, CodexFileCursor>;
     sessionIndex?: Record<string, CodexSessionIndexEntry>;
     seenHashes?: string[];
+    /**
+     * Lifetime upper bound already contributed for each Codex thread
+     * (precise JSONL rows plus any ledger gap). Missing on older cursors.
+     */
+    ledgerTotals?: Record<string, { tokens: number }>;
+    /** mtimeMs of each `state_*.sqlite` last read. */
+    dbMtimes?: Record<string, number>;
   };
   cursor?: {
     lastRecordTimestamp?: string | null;
@@ -192,6 +205,8 @@ export interface CursorsFile {
       }
     >;
   };
+  /** Independent snapshots for DevEco Code; never shared with OpenCode. */
+  deveco?: CursorsFile['opencode'];
   copilot?: {
     /** Per events.jsonl byte cursors. */
     files?: Record<string, ClaudeFileCursor>;
@@ -229,6 +244,11 @@ export interface CursorsFile {
      * No longer read; kept so an existing `cursors.json` still deserialises.
      */
     seenTurns?: Record<string, TokenTotals>;
+  };
+  /** KinetAios: seen cost_log.id window + max ts(ms). */
+  kinetaios?: {
+    seenIds: string[];
+    lastTs: number;
   };
   commandCode?: {
     files: Record<string, ClaudeFileCursor>;
@@ -470,6 +490,26 @@ export interface CursorsFile {
     dbMtimes?: Record<string, number>;
     updatedAt?: string;
   };
+  wpsComate?: {
+    /** Per session file: inode/offset cursor + cached project name. */
+    files?: Record<
+      string,
+      { inode: number; offset: number; project?: string }
+    >;
+    /** Assistant entry ids already counted (`<fileName>:<entryId>`). */
+    seenIds?: string[];
+  };
+  teleagent?: {
+    /** Per super-agent-server-*.log byte cursors. */
+    files?: Record<
+      string,
+      { inode: number; size: number; mtimeMs: number; offset: number }
+    >;
+    /** Dedup keys for already-counted cost lines. */
+    seenHashes?: string[];
+    /** Recent request_id → model map so incremental reads can resolve models. */
+    lastModels?: Record<string, string>;
+  };
 }
 
 export interface TudConfig {
@@ -539,8 +579,10 @@ export interface SourceUsageRow {
 }
 
 export interface UsageSummary {
-  todayLocalMetrics?: LocalUsageMetrics;
+  /** Aggregated local request/cache evidence across the summary window. */
   localMetrics?: LocalUsageMetrics;
+  /** Same evidence restricted to the local "today" date. */
+  todayLocalMetrics?: LocalUsageMetrics;
   totalTokens: number;
   totalCostUsd: number;
   todayTokens: number;
@@ -557,13 +599,6 @@ export interface DailyProjectUsage {
 }
 
 export interface DailyUsageRow {
-  sources?: Array<{
-    source: string;
-    tokens: number;
-    costUsd: number;
-    localMetrics: LocalUsageMetrics;
-  }>;
-  localMetrics?: LocalUsageMetrics;
   date: string;
   tokens: number;
   costUsd: number;
@@ -575,6 +610,14 @@ export interface DailyUsageRow {
   outputTokens?: number;
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
+  /** Per-source local evidence for this day (additive requestCount). */
+  sources?: Array<{
+    source: string;
+    tokens: number;
+    costUsd: number;
+    localMetrics: LocalUsageMetrics;
+  }>;
+  localMetrics?: LocalUsageMetrics;
 }
 
 export interface DailyUsageResponse {
@@ -583,7 +626,6 @@ export interface DailyUsageResponse {
 
 /** One hour bucket in the stats timezone (default Asia/Shanghai). */
 export interface HourlyUsageRow {
-  localMetrics?: LocalUsageMetrics;
   date: string;
   hour: number;
   /** Tool / integration channel (e.g. `claude`, `cursor`). */
@@ -593,6 +635,7 @@ export interface HourlyUsageRow {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  localMetrics?: LocalUsageMetrics;
 }
 
 export interface HourlyUsageResponse {

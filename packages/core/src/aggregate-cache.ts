@@ -18,7 +18,6 @@ import { normalizeProjectName } from './project-label.js';
 import { roundCostUsd } from './pricing/index.js';
 import {
   DEFAULT_STATS_TIMEZONE,
-  addLocalDays,
   localDateAndHour,
   localDateDaysAgo,
   localDateNow,
@@ -35,7 +34,10 @@ import type {
   UsageSummary,
 } from './types.js';
 
-/** v7 adds local usage metrics and exact daily source slices (was v6 token IO fields). */
+/**
+ * v7: sealed daily/summary rows gain optional localMetrics + daily.sources.
+ * Bump required so pre-v7 seals (missing fields) are not read as requestCount=0.
+ */
 const CACHE_VERSION = 7;
 /** Epoch lower bound so single-day aggregates are not clipped by statsSince. */
 const EPOCH_SINCE = '1970-01-01T00:00:00.000Z';
@@ -336,11 +338,12 @@ export class AggregateCache {
 
   /**
    * After BucketStore.apply / reload: reseal touched historical dates and
-   * roll yesterday into sealed when the calendar day advances.
+   * seal any missing historical dates when the calendar day advances.
    */
   async onBucketsChanged(
     allRows: QueueBucket[],
     touchedBuckets: QueueBucket[] = [],
+    reconcileHistory = false,
   ): Promise<void> {
     await this.ensureLoaded();
     const today = localDateNow(this.timeZone);
@@ -351,19 +354,18 @@ export class AggregateCache {
       return;
     }
 
-    // Cross-midnight: seal yesterday if still missing.
-    if (this.sealedAsOf && this.sealedAsOf < today) {
-      const yesterday = addLocalDays(today, -1);
-      if (!this.days.has(yesterday)) {
-        const entry = buildSealedDay(allRows, yesterday, this.timeZone);
-        if (entry) {
-          this.days.set(yesterday, entry);
-          this.dirty = true;
-        }
+    // Startup also repairs gaps left by older versions. A sleeping app can
+    // resume several days later, so sealing only yesterday misses earlier days.
+    if (reconcileHistory || (this.sealedAsOf && this.sealedAsOf < today)) {
+      for (const date of touchedLocalDates(allRows, this.timeZone)) {
+        if (date >= today || this.days.has(date)) continue;
+        const entry = buildSealedDay(allRows, date, this.timeZone);
+        if (!entry) continue;
+        this.days.set(date, entry);
+        this.dirty = true;
       }
-      this.sealedAsOf = today;
-      this.dirty = true;
-    } else if (!this.sealedAsOf) {
+    }
+    if (this.sealedAsOf !== today) {
       this.sealedAsOf = today;
       this.dirty = true;
     }
@@ -674,6 +676,16 @@ export class AggregateCache {
   /** Test seam: sealed day count. */
   sealedDayCount(): number {
     return this.days.size;
+  }
+
+  /**
+   * Closed days are not sealed for the current calendar day yet.
+   * A process that stays up across midnight must seal even when sync wrote nothing;
+   * otherwise yesterday stays out of the sealed cache and reads as 0.
+   */
+  needsCalendarSeal(): boolean {
+    if (!this.loaded) return true;
+    return this.sealedAsOf !== localDateNow(this.timeZone);
   }
 
   /**

@@ -89,7 +89,9 @@ function pikaDataset(): UsageDataset {
 test('pika local daily and hourly values reconcile without template ratios or cache clipping', () => {
   const dataset = pikaDataset();
   const data = buildDashboardDataFromDataset(dataset, 7, true);
-  assert.equal(data.summary.inputTokens, 1400);
+  assert.equal(data.summary.inputTokens, 500);
+  assert.equal(data.summary.cachedInputTokens, 600);
+  assert.equal(data.summary.cacheCreationInputTokens, 300);
   assert.equal(data.summary.outputTokens, 200);
   assert.equal(data.summary.localMetrics?.requestCount, 12);
   assert.equal(data.summary.localMetrics?.cacheHitRate, 600 / 1400);

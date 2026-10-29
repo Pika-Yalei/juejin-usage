@@ -18,12 +18,10 @@ export function unavailableLocalMetrics(): LocalUsageMetrics {
 export function localUsageFields(metrics: LocalUsageMetrics) {
   return {
     localMetrics: metrics,
-    inputTokens:
-      metrics.cacheReadTokens === null || metrics.cacheWriteTokens === null
-        ? 0
-        : metrics.uncachedInputTokens +
-          metrics.cacheReadTokens +
-          metrics.cacheWriteTokens,
+    // Match the API and trend contract: cache reads/writes are separate columns.
+    inputTokens: metrics.uncachedInputTokens,
+    requestCount: metrics.requestCount,
+    knownRequestCount: metrics.knownRequestCount,
     uncachedInputTokens: metrics.uncachedInputTokens,
     cachedInputTokens: metrics.cacheReadTokens ?? 0,
     outputTokens: metrics.outputTokens + metrics.reasoningOutputTokens,

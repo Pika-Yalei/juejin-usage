@@ -22,14 +22,14 @@ export function LocalUsageMetricCards({
       label: '缓存读取',
       value: metrics?.cacheReadTokens ?? null,
       format: formatTokens,
-      help: '从缓存复用的输入 Token，已包含在输入 Token 和总 Token 中。',
+      help: '从缓存复用的输入 Token，已包含在总 Token 中，与普通输入 Token 分列显示。',
       missing: '当前来源缺少缓存读取数据',
     },
     {
       label: '缓存创建',
       value: metrics?.cacheWriteTokens ?? null,
       format: formatTokens,
-      help: '写入缓存的输入 Token，已包含在输入 Token 和总 Token 中。',
+      help: '写入缓存的输入 Token，已包含在总 Token 中，与普通输入 Token 分列显示。',
       missing: '当前来源缺少缓存创建数据',
     },
     {

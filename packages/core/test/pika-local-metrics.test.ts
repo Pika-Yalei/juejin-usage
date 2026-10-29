@@ -64,7 +64,8 @@ test('pika missing, invalid, legacy and zero usage remain distinct', () => {
   assert.equal(metricsFromBucket(legacy).cacheHitRate, 0.6);
   const mixed = aggregateLocalMetrics([legacy, pikaBucket()]);
   assert.equal(mixed.requestCount, null);
-  assert.equal(mixed.knownRequestCount, 1);
+  // Upstream now includes legacy conversation counts as a known lower bound.
+  assert.equal(mixed.knownRequestCount, 2);
   assert.equal(
     metricsFromBucket(
       pikaBucket({ source: 'unknown', local_metrics: undefined }),

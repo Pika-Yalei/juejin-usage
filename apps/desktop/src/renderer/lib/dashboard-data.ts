@@ -20,6 +20,8 @@ import {
   DASHBOARD_HOURS,
   DASHBOARD_WEEKDAYS,
   HEATMAP_LOOKBACK_DAYS,
+  mergeRequestCount,
+  mergeKnownRequestCount,
   type DashboardDailyUsageRow,
   type DashboardDistributionRow,
   type DashboardDistributions,
@@ -54,6 +56,7 @@ const SOURCE_LABELS: Record<string, string> = {
   trae: 'trae',
   gemini: 'gemini',
   opencode: 'opencode',
+  deveco: 'deveco',
   copilot: 'copilot',
   antigravity: 'antigravity',
   openclaw: 'openclaw',
@@ -236,6 +239,8 @@ export function buildFilledHourlyForDate(
     outputTokens: number;
     cachedInputTokens: number;
     parts: HourlyUsageRow[];
+    requestCount?: number | null;
+    knownRequestCount?: number;
   };
   const byHour = new Map<number, HourAgg>();
   for (const row of apiRows) {
@@ -256,6 +261,16 @@ export function buildFilledHourlyForDate(
     existing.inputTokens += row.inputTokens;
     existing.outputTokens += row.outputTokens;
     existing.cachedInputTokens += row.cachedInputTokens;
+    if (row.localMetrics) {
+      existing.requestCount = mergeRequestCount(
+        existing.requestCount,
+        row.localMetrics.requestCount,
+      );
+      existing.knownRequestCount = mergeKnownRequestCount(
+        existing.knownRequestCount,
+        row.localMetrics.knownRequestCount,
+      );
+    }
     byHour.set(hour, existing);
   }
   const day = weekdayForDate(targetDate || date);
@@ -287,6 +302,10 @@ export function buildFilledHourlyForDate(
       durationMinutes: 0,
       ...(localMode || api.parts.some((part) => part.localMetrics)
         ? localUsageFields(sumLocalMetrics(api.parts))
+        : {}),
+      ...(api.requestCount !== undefined ? { requestCount: api.requestCount } : {}),
+      ...(api.knownRequestCount !== undefined
+        ? { knownRequestCount: api.knownRequestCount }
         : {}),
     };
   });
@@ -609,6 +628,11 @@ function aggregateDailyRows(
       totalCostUsd: current.totalCostUsd + row.costUsd,
       totalDurationMinutes:
         current.totalDurationMinutes + row.durationMinutes,
+      requestCount: mergeRequestCount(current.requestCount, row.requestCount),
+      knownRequestCount: mergeKnownRequestCount(
+        current.knownRequestCount,
+        row.knownRequestCount,
+      ),
     }),
     {
       inputTokens: 0,

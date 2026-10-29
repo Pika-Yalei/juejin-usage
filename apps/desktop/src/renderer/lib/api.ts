@@ -1,4 +1,11 @@
 import type { LocalUsageMetrics } from '@juejin-opensource/jusage-core/local-metrics';
+import { isDesktopMockEnabled } from './desktop-subscription-mock';
+import {
+  desktopMockDaily,
+  desktopMockSyncStatus,
+  desktopMockUsageDataset,
+} from './desktop-usage-mock';
+
 export interface ModelUsageRow {
   localMetrics?: LocalUsageMetrics;
   model: string;
@@ -119,8 +126,8 @@ export interface SourceUsageRow {
 }
 
 export interface UsageSummary {
-  todayLocalMetrics?: LocalUsageMetrics;
   localMetrics?: LocalUsageMetrics;
+  todayLocalMetrics?: LocalUsageMetrics;
   totalTokens: number;
   totalCostUsd: number;
   todayTokens: number;
@@ -136,13 +143,6 @@ export interface DailyProjectUsage {
 }
 
 export interface DailyUsageRow {
-  sources?: Array<{
-    source: string;
-    tokens: number;
-    costUsd: number;
-    localMetrics: LocalUsageMetrics;
-  }>;
-  localMetrics?: LocalUsageMetrics;
   date: string;
   tokens: number;
   costUsd: number;
@@ -152,6 +152,13 @@ export interface DailyUsageRow {
   outputTokens?: number;
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
+  sources?: Array<{
+    source: string;
+    tokens: number;
+    costUsd: number;
+    localMetrics: LocalUsageMetrics;
+  }>;
+  localMetrics?: LocalUsageMetrics;
 }
 
 export interface DailyUsageResponse {
@@ -159,7 +166,6 @@ export interface DailyUsageResponse {
 }
 
 export interface HourlyUsageRow {
-  localMetrics?: LocalUsageMetrics;
   date: string;
   hour: number;
   /** Tool / integration channel (e.g. `claude`, `cursor`). */
@@ -169,6 +175,7 @@ export interface HourlyUsageRow {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  localMetrics?: LocalUsageMetrics;
 }
 
 export interface HourlyUsageResponse {
@@ -343,6 +350,7 @@ export async function fetchSummary(): Promise<UsageSummary> {
 }
 
 export async function fetchDaily(days = 90): Promise<DailyUsageResponse> {
+  if (isDesktopMockEnabled()) return desktopMockDaily(days);
   const { others } = apiPrefixes();
   return request<DailyUsageResponse>(`${others}usage-daily?days=${days}`, {
     headers: authHeaders(),
@@ -365,6 +373,7 @@ export async function fetchModelBreakdown(days = 30): Promise<ModelBreakdownResp
 }
 
 export async function fetchSyncStatus(): Promise<SyncStatus> {
+  if (isDesktopMockEnabled()) return desktopMockSyncStatus();
   const { others } = apiPrefixes();
   return request<SyncStatus>(`${others}sync-status`, { headers: authHeaders() });
 }
@@ -426,6 +435,13 @@ export async function applyCalibrate(
   deleted: number;
   upserted: number;
   floored: number;
+  skipped: number;
+  skippedEvents?: Array<{
+    event_id: string;
+    reason: string;
+    existing_device_id?: string | null;
+    existing_occurred_at?: string;
+  }>;
   preview: CalibratePreviewResponse;
 }> {
   const { others } = apiPrefixes();
@@ -475,6 +491,9 @@ export async function fetchUsageDataset(
 ): Promise<UsageDataset> {
   const { dailyDays, breakdownDays, hourlyDays } =
     normalizeUsageDatasetDays(days);
+  if (isDesktopMockEnabled()) {
+    return desktopMockUsageDataset({ dailyDays, breakdownDays, hourlyDays });
+  }
   const [summary, syncStatus, daily, hourly, models] = await Promise.all([
     fetchSummary(),
     fetchSyncStatus().catch(() => null),
@@ -502,6 +521,17 @@ export async function fetchUsageDatasetThin(
   breakdownDays: number,
   hourlyDays: number,
 ): Promise<UsageDataset> {
+  if (isDesktopMockEnabled()) {
+    const next = desktopMockUsageDataset({
+      dailyDays: Math.max(previous.dailyRows.length, breakdownDays),
+      breakdownDays,
+      hourlyDays,
+    });
+    return {
+      ...next,
+      dailyRows: previous.dailyRows.length > 0 ? previous.dailyRows : next.dailyRows,
+    };
+  }
   const [summary, syncStatus, hourly, models] = await Promise.all([
     fetchSummary(),
     fetchSyncStatus().catch(() => null),
@@ -549,6 +579,16 @@ export interface EnsureLocalRangeResult {
 export async function ensureLocalRange(
   days: number,
 ): Promise<EnsureLocalRangeResult> {
+  if (isDesktopMockEnabled()) {
+    const since = desktopMockSyncStatus().statsSince;
+    return {
+      expanded: false,
+      localCollectSince: since,
+      statsSince: since,
+      sync: null,
+      message: 'ok',
+    };
+  }
   const { others } = apiPrefixes();
   return request<EnsureLocalRangeResult>(`${others}ensure-local-range`, {
     method: 'POST',

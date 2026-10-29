@@ -13,6 +13,7 @@ import type {
 } from '../types.js';
 import { resolveProjectName } from '../project-name.js';
 import { toUtcHalfHourStart } from '../queue/keys.js';
+import { createJsonlLineReader } from './jsonl-tail.js';
 import {
   modelFromRolloutEvent,
   readModel,
@@ -263,10 +264,9 @@ export async function parseEveryCodeIncremental(
     }
     let sessionUuid: string | null = meta.sessionId;
 
-    const stream = createReadStream(filePath, { start: startOffset });
-    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    const reader = createJsonlLineReader(filePath, startOffset);
 
-    for await (const line of rl) {
+    for await (const line of reader) {
       if (!line.trim()) continue;
       let obj: Record<string, unknown>;
       try {
@@ -299,11 +299,14 @@ export async function parseEveryCodeIncremental(
       const modelKey = readModel(info.model) ?? turnContextModel;
       const prevTotals = prevTotalMap.get(modelKey);
       const rawUsage = pickDelta(lastUsage, totalUsage, prevTotals);
-      if (totalUsage) prevTotalMap.set(modelKey, { ...totalUsage });
 
       const isReplayedHistory = tokenCountSeen < replayTokenCountToSkip;
       tokenCountSeen += 1;
-      if (isReplayedHistory || !rawUsage) continue;
+      if (isReplayedHistory) {
+        if (totalUsage) prevTotalMap.set(modelKey, { ...totalUsage });
+        continue;
+      }
+      if (!rawUsage) continue;
 
       const delta = normalizeEveryCodeUsage(rawUsage);
       if (!delta) continue;
@@ -311,7 +314,12 @@ export async function parseEveryCodeIncremental(
       const ts = tokenEvent.timestamp;
       if (!ts) continue;
       const hourStart = toUtcHalfHourStart(ts);
-      if (!hourStart || new Date(hourStart).getTime() < sinceMs) continue;
+      if (!hourStart) continue;
+      // Keep incomplete cumulative records pending until a later event has a
+      // usable timestamp. Otherwise the later record diffs to zero and the
+      // complete usage is permanently skipped.
+      if (totalUsage) prevTotalMap.set(modelKey, { ...totalUsage });
+      if (new Date(hourStart).getTime() < sinceMs) continue;
 
       const dedupKey = sessionUuid && ts ? `${sessionUuid}:${ts}` : null;
       if (dedupKey && seenHashes.has(dedupKey)) continue;
@@ -337,7 +345,7 @@ export async function parseEveryCodeIncremental(
 
     everyCodeCursor.files[filePath] = {
       inode,
-      offset: st.size,
+      offset: reader.nextOffset,
       tokenCountSeen,
       prevTotal: prevTotalSave,
       lastModel: turnContextModel,

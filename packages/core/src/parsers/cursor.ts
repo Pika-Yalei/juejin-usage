@@ -6,6 +6,10 @@ import type { CursorsFile, QueueBucket, TokenTotals } from '../types.js';
 import { cursorCliConfigPath, cursorStateVscdbPath } from '../paths.js';
 import { toUtcHalfHourStart } from '../queue/keys.js';
 import {
+  CursorSafeStorageError,
+  unwrapCursorAccessToken,
+} from '../subscription/readers/cursor-safe-storage.js';
+import {
   accumulateBucket,
   bucketStateKey,
   bucketsFromState,
@@ -16,7 +20,14 @@ import { isSqliteLockError, queryDbJson, readSqliteWithSnapshot } from './sqlite
 
 const ACCESS_TOKEN_KEY = 'cursorAuth/accessToken';
 const SESSION_COOKIE = 'WorkosCursorSessionToken';
-const FETCH_TIMEOUT_MS = 30_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 180_000;
+
+function cursorFetchTimeoutMs(): number {
+  const configuredTimeoutMs = Number(process.env.JUSAGE_CURSOR_FETCH_TIMEOUT_MS);
+  return Number.isSafeInteger(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? configuredTimeoutMs
+    : DEFAULT_FETCH_TIMEOUT_MS;
+}
 
 /** Re-read the session cookie from state.vscdb at most this often (invalidated on 401). */
 const COOKIE_CACHE_TTL_MS = 30 * 60_000;
@@ -147,7 +158,7 @@ async function fetchUsageCsv(cookie: string): Promise<string> {
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(cursorFetchTimeoutMs()),
     });
   } catch (err) {
     const reason = err instanceof Error && err.name === 'TimeoutError' ? 'timeout' : 'network';
@@ -163,7 +174,12 @@ async function fetchUsageCsv(cookie: string): Promise<string> {
     }
     throw new Error(`Cursor API 返回 ${resp.status}`);
   }
-  return resp.text();
+  try {
+    return await resp.text();
+  } catch (err) {
+    const reason = err instanceof Error && err.name === 'TimeoutError' ? 'timeout' : 'network';
+    throw new CursorSyncSkippedError(`Cursor 用量拉取跳过 (${reason})`);
+  }
 }
 
 function parseCsvLine(line: string): string[] {
@@ -400,10 +416,10 @@ export async function parseCursorIncremental(
   const cachedCookie =
     cookieCache && Date.now() - cookieCache.cachedAt < COOKIE_CACHE_TTL_MS ? cookieCache.cookie : null;
 
-  const loadCookies = (): { cookies: string[] } | { skip: string } => {
-    let jwt: string | null;
+  const loadCookies = async (): Promise<{ cookies: string[] } | { skip: string }> => {
+    let rawToken: string | null;
     try {
-      jwt = readAccessToken(dbPath);
+      rawToken = readAccessToken(dbPath);
     } catch (err) {
       if (err instanceof Error && err.message.includes('ENOENT')) {
         return { skip: '需要 sqlite3 CLI 或 Node >= 22.5 以读取 Cursor 数据库' };
@@ -413,7 +429,18 @@ export async function parseCursorIncremental(
       }
       throw err;
     }
-    if (!jwt) return { skip: 'Cursor 未登录' };
+    if (!rawToken) return { skip: 'Cursor 未登录' };
+    let jwt: string;
+    try {
+      // Never prompt for Keychain during background CSV sync; reuse an in-process
+      // cache from a prior manual subscription refresh when available.
+      jwt = await unwrapCursorAccessToken(rawToken, { allowKeychainPrompt: false });
+    } catch (err) {
+      if (err instanceof CursorSafeStorageError) {
+        return { skip: err.message };
+      }
+      return { skip: '暂时无法读取 Cursor 登录信息' };
+    }
     const cookies = sessionCookiesFromJwt(jwt);
     if (cookies.length === 0) return { skip: '无法解析 Cursor 会话凭证' };
     return { cookies };
@@ -421,9 +448,19 @@ export async function parseCursorIncremental(
 
   try {
     const cookies: string[] = [];
-    if (cachedCookie) cookies.push(cachedCookie);
-    else {
-      const loaded = loadCookies();
+    if (cachedCookie) {
+      const loaded = await loadCookies();
+      if ('skip' in loaded) {
+        cookieCache = null;
+        cursors.cursor.lastError = loaded.skip;
+        return {
+          result: { buckets: [], eventsParsed: 0, filesProcessed: 0, skipped: true, error: loaded.skip },
+          cursors,
+        };
+      }
+      cookies.push(cachedCookie);
+    } else {
+      const loaded = await loadCookies();
       if ('skip' in loaded) {
         cursors.cursor.lastError = loaded.skip;
         return {
@@ -440,7 +477,7 @@ export async function parseCursorIncremental(
     } catch (err) {
       if (!(cachedCookie && err instanceof CursorNotLoggedInError)) throw err;
       cookieCache = null;
-      const loaded = loadCookies();
+      const loaded = await loadCookies();
       if ('skip' in loaded) {
         cursors.cursor.lastError = loaded.skip;
         return {

@@ -25,14 +25,20 @@ import { qwenTmpDir } from '../parsers/qwen.js';
 import { resolveWorkbuddyHome } from '../parsers/workbuddy.js';
 import { zcodeDbPath } from '../parsers/zcode.js';
 import { dshHome } from '../parsers/dsh.js';
+import { kinetaiosDbPath } from '../parsers/kinetaios.js';
 import { zedDbPath } from '../parsers/zed.js';
 import { warpDbPaths } from '../parsers/warp.js';
+import { miniMaxCodeDataPaths } from '../parsers/minimax-code.js';
+import { wpsComateSessionsDir } from '../parsers/wps-comate.js';
+import { teleagentLogRoots } from '../parsers/teleagent.js';
 import {
   codexHomeCandidates,
   commandCodeProjectsDirs,
   copilotSessionStateDir,
   cursorStateVscdbPath,
   geminiTmpDir,
+  kimiDesktopCodeHome,
+  devecoDbPath,
   opencodeDbPath,
   opencodeMessagesDir,
   qoderCliProjectsDirs,
@@ -89,6 +95,8 @@ export function isSyncSourcePresent(source: string): boolean {
       return anyExists(
         codexHomeCandidates().flatMap((home) => [home, join(home, 'sessions')]),
       );
+    case 'minimax-code':
+      return anyExists(miniMaxCodeDataPaths());
     case 'cursor':
       return anyExists([cursorStateVscdbPath()]);
     case 'qoder':
@@ -101,6 +109,8 @@ export function isSyncSourcePresent(source: string): boolean {
       return anyExists(traeAgentDbEntries().map((e) => e.dbPath));
     case 'gemini':
       return anyExists([geminiTmpDir()]);
+    case 'deveco':
+      return anyExists([devecoDbPath()]);
     case 'opencode':
       return anyExists([opencodeDbPath(), opencodeMessagesDir()]);
     case 'copilot':
@@ -117,6 +127,8 @@ export function isSyncSourcePresent(source: string): boolean {
       return anyExists([zcodeDbPath()]);
     case 'dsh':
       return anyExists([dshHome(), join(dshHome(), 'sessions')]);
+    case 'kinetaios':
+      return anyExists([kinetaiosDbPath()]);
     case 'pi':
       return anyExists([piSessionsDir()]);
     case 'kimi': {
@@ -126,6 +138,7 @@ export function isSyncSourcePresent(source: string): boolean {
         process.env.KIMI_HOME,
         join(home, '.kimi-code'),
         join(home, '.kimi'),
+        kimiDesktopCodeHome(),
       ]);
     }
     case 'roocode':
@@ -196,6 +209,10 @@ export function isSyncSourcePresent(source: string): boolean {
       return anyExists([zedDbPath()]);
     case 'warp':
       return anyExists(warpDbPaths());
+    case 'wps-comate':
+      return anyExists([wpsComateSessionsDir()]);
+    case 'teleagent':
+      return anyExists(teleagentLogRoots());
     default:
       return true;
   }

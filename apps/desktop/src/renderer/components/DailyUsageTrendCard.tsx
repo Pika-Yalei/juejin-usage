@@ -60,7 +60,7 @@ const CHART_CONFIG = {
   },
 } satisfies ChartConfig;
 
-type DailyTrendPoint = UsageTrendChartPoint & {
+type DailyTrendPoint = Omit<UsageTrendChartPoint, 'inputTokens' | 'cachedInputTokens' | 'otherTokens'> & {
   cacheCreationTokens: number | null;
   inputTokens: number | null;
   cachedInputTokens: number | null;

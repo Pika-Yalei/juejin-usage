@@ -52,7 +52,7 @@ const CHART_CONFIG = {
   cacheCreationTokens: { label: '缓存创建', color: '#A68AD4' },
 } satisfies ChartConfig;
 
-type TokenTrendPoint = UsageTrendChartPoint & {
+type TokenTrendPoint = Omit<UsageTrendChartPoint, 'inputTokens' | 'cachedInputTokens' | 'otherTokens'> & {
   cacheCreationTokens?: number | null;
   inputTokens: number | null;
   cachedInputTokens: number | null;

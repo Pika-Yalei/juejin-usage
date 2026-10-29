@@ -10,7 +10,14 @@
     "outDir": "dist-test",
     "rootDir": "src",
     "sourceMap": false,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*.test.ts"]
+  "include": [
+    "src/**/*.test.ts"
+  ],
+  "exclude": [
+    "src/renderer/lib/pika-local-usage.test.ts"
+  ]
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as zlib from 'node:zlib';
@@ -31,12 +31,15 @@ const createZstdCompress = (
  * 帧头不含 content-size（#187 触发原生崩溃的正是这种帧型）。
  * 无流式 API 的运行时（Node < 22.15）退回 content-size 帧。
  */
-async function zstdJsonlMultiFrame(lines: unknown[]): Promise<Buffer> {
-  if (!createZstdCompress) return zstdJsonlMultiFrameSync(lines);
+async function zstdJsonlMultiFrame(
+  lines: unknown[],
+  truncateLastFrame = false,
+): Promise<Buffer> {
+  if (!createZstdCompress && !truncateLastFrame) return zstdJsonlMultiFrameSync(lines);
   const frames = await Promise.all(
     lines.map(
       (l) =>
-        new Promise<Buffer>((resolve, reject) => {
+        !createZstdCompress ? Promise.resolve(zstdJsonl([l])) : new Promise<Buffer>((resolve, reject) => {
           const chunks: Buffer[] = [];
           const stream = createZstdCompress();
           stream.on('data', (c: Buffer) => chunks.push(c));
@@ -46,6 +49,11 @@ async function zstdJsonlMultiFrame(lines: unknown[]): Promise<Buffer> {
         }),
     ),
   );
+  if (truncateLastFrame) {
+    const last = frames[frames.length - 1]!;
+    assert.ok(last.length > 8, 'expected a non-trivial trailing frame');
+    frames[frames.length - 1] = last.subarray(0, Math.floor(last.length / 2));
+  }
   return Buffer.concat(frames);
 }
 
@@ -67,6 +75,7 @@ async function writeSession(
   }>,
   opts: {
     multiFrame?: boolean;
+    truncateLastFrame?: boolean;
     plain?: boolean;
     requestModel?: string;
     omitMessageModel?: boolean;
@@ -138,7 +147,7 @@ async function writeSession(
   const file = join(dir, opts.filename ?? defaultName);
   const contents = file.endsWith('.zstd')
     ? opts.multiFrame
-      ? await zstdJsonlMultiFrame(lines)
+      ? await zstdJsonlMultiFrame(lines, opts.truncateLastFrame)
       : zstdJsonl(lines)
     : Buffer.from(lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
   writeFileSync(file, contents);
@@ -403,32 +412,14 @@ test('parseDshIncremental keeps completed frames when the trailing frame is trun
   const prev = process.env.DSH_HOME;
   process.env.DSH_HOME = home;
   try {
-    const file = await writeSession(home, 'ws-a', 's1', '/tmp/proj/trunc', [
+    // Cut the known final tool/result frame while constructing the fixture.
+    // Native zstd bytesWritten may cover ALL concatenated frames on Node 24,
+    // so it cannot reliably locate the last frame across supported runtimes.
+    await writeSession(home, 'ws-a', 's1', '/tmp/proj/trunc', [
       { model: 'deepseek-v4-pro', input: 10, output: 5, cacheRead: 20, id: 'm1', time: 1787830861590 },
       { model: 'deepseek-v4-pro', input: 7, output: 3, cacheRead: 11, id: 'm2', time: 1787830862590 },
       { model: 'glm-5.2', input: 8, output: 2, cacheRead: 9, id: 'm3', time: 1787830863590 },
-    ], { multiFrame: true });
-
-    const intact = readFileSync(file);
-    // 截断末帧中部，模拟写入中的半帧文件。
-    // writeSession 末帧为无用量的 tool/result；前缀应仍解析出 3 条 assistant 用量
-    //（整文件丢弃则会 eventsParsed=0）。
-    let offset = 0;
-    let lastStart = 0;
-    let lastLen = 0;
-    while (offset < intact.length) {
-      const res = zlib.zstdDecompressSync(intact.subarray(offset), { info: true }) as unknown as {
-        buffer: Buffer;
-        engine?: { bytesWritten?: number };
-      };
-      const consumed = res.engine?.bytesWritten ?? 0;
-      assert.ok(consumed > 0);
-      lastStart = offset;
-      lastLen = consumed;
-      offset += consumed;
-    }
-    assert.ok(lastLen > 8, 'expected a non-trivial trailing frame');
-    writeFileSync(file, intact.subarray(0, lastStart + Math.floor(lastLen / 2)));
+    ], { multiFrame: true, truncateLastFrame: true });
 
     const { result } = await parseDshIncremental(emptyCursors(), SINCE);
     assert.equal(result.eventsParsed, 3);
